@@ -14,6 +14,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/pkg/errors"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -267,9 +269,9 @@ type serviceFailureActionsFlag struct {
 	failureActionsOnNonCrashFailures int32
 }
 
-func (ws *windowsService) ensureRestartOnFailure(name string, handle windows.Handle) (err error) {
+func ensureRestartOnFailure(name string, handle windows.Handle) (err error) {
 	defer func() {
-		closeErr := mgr.CloseHandle(handle)
+		closeErr := windows.CloseServiceHandle(handle)
 		if closeErr != nil {
 			if err == nil {
 				err = errors.Wrapf(closeErr, "close %q handle failed", name)
@@ -293,7 +295,7 @@ func (ws *windowsService) ensureRestartOnFailure(name string, handle windows.Han
 
 	err = windows.ChangeServiceConfig2(handle, SERVICE_CONFIG_FAILURE_ACTIONS, (*byte)(unsafe.Pointer(&failActions)))
 	if err != nil {
-		return errors.Trace(err)
+		return errors.WithStack(err)
 	}
 
 	flag := serviceFailureActionsFlag{
@@ -302,7 +304,7 @@ func (ws *windowsService) ensureRestartOnFailure(name string, handle windows.Han
 
 	err = windows.ChangeServiceConfig2(handle, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, (*byte)(unsafe.Pointer(&flag)))
 	if err != nil {
-		return errors.Trace(err)
+		return errors.WithStack(err)
 	}
 
 	return nil
