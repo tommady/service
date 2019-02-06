@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
@@ -226,6 +227,84 @@ func (ws *windowsService) Install() error {
 			return fmt.Errorf("SetupEventLogSource() failed: %s", err)
 		}
 	}
+
+	return ensureRestartOnFailure(ws.Name, s.Handle)
+}
+
+type SC_ENUM_TYPE int
+
+// https://msdn.microsoft.com/en-us/library/windows/desktop/ms681988(v=vs.85).aspx
+const (
+	SC_ENUM_PROCESS_INFO                SC_ENUM_TYPE = 0
+	SERVICE_CONFIG_FAILURE_ACTIONS                   = 2
+	SERVICE_CONFIG_FAILURE_ACTIONS_FLAG              = 4
+)
+
+//sys enumServicesStatus(h windows.Handle, InfoLevel SC_ENUM_TYPE, dwServiceType uint32, dwServiceState uint32, lpServices uintptr, cbBufSize uint32, pcbBytesNeeded *uint32, lpServicesReturned *uint32, lpResumeHandle *uint32, pszGroupName *uint32) (err error) [failretval==0] = advapi32.EnumServicesStatusExW
+const (
+	SC_ACTION_NONE = iota
+	SC_ACTION_RESTART
+	SC_ACTION_REBOOT
+	SC_ACTION_RUN_COMMAND
+)
+
+type serviceAction struct {
+	actionType uint16
+	delay      uint32
+}
+
+// https://msdn.microsoft.com/en-us/library/windows/desktop/ms685939(v=vs.85).aspx
+type serviceFailureActions struct {
+	dwResetPeriod uint32
+	lpRebootMsg   *uint16
+	lpCommand     *uint16
+	cActions      uint32
+	scAction      *serviceAction
+}
+
+// https://msdn.microsoft.com/en-us/library/windows/desktop/ms685937(v=vs.85).aspx
+type serviceFailureActionsFlag struct {
+	failureActionsOnNonCrashFailures int32
+}
+
+func (ws *windowsService) ensureRestartOnFailure(name string, handle windows.Handle) (err error) {
+	defer func() {
+		closeErr := mgr.CloseHandle(handle)
+		if closeErr != nil {
+			if err == nil {
+				err = errors.Wrapf(closeErr, "close %q handle failed", name)
+			} else {
+				err = errors.Wrapf(err, "(also close %q handle failed):%s", name, closeErr)
+			}
+		}
+	}()
+
+	action := serviceAction{
+		actionType: SC_ACTION_RESTART,
+		delay:      5000,
+	}
+	failActions := serviceFailureActions{
+		dwResetPeriod: 5,
+		lpRebootMsg:   nil,
+		lpCommand:     nil,
+		cActions:      1,
+		scAction:      &action,
+	}
+
+	err = windows.ChangeServiceConfig2(handle, SERVICE_CONFIG_FAILURE_ACTIONS, (*byte)(unsafe.Pointer(&failActions)))
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	flag := serviceFailureActionsFlag{
+		failureActionsOnNonCrashFailures: 1,
+	}
+
+	err = windows.ChangeServiceConfig2(handle, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, (*byte)(unsafe.Pointer(&flag)))
+	if err != nil {
+		return errors.Trace(err)
+	}
+
 	return nil
 }
 
